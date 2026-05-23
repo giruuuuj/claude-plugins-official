@@ -455,7 +455,7 @@ const mcp = new Server(
     instructions: [
       'The sender reads Discord, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat.',
       '',
-      'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
+      'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." user_id="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses. When a message includes reply_to_message_id and reply_to_user_id, the user is replying to someone in a thread — include that context before responding.',
       '',
       'reply accepts file paths (files: ["/abs/path.png"]) for attachments. Use react to add emoji reactions, and edit_message for interim progress updates. Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
       '',
@@ -859,6 +859,14 @@ async function handleInbound(msg: Message): Promise<void> {
     void msg.react(access.ackReaction).catch(() => {})
   }
 
+  // Reply-to reference — exposes threading context without extra API call.
+  // replyToUserId is set only when the target is one of our own messages
+  // (avoiding fetchReference in the notification path).
+  const replyToMessageId = msg.reference?.messageId ?? undefined
+  const replyToUserId = replyToMessageId && recentSentIds.has(replyToMessageId)
+    ? client.user?.id
+    : undefined
+
   // Attachments are listed (name/type/size) but not downloaded — the model
   // calls download_attachment when it wants them. Keeps the notification
   // fast and avoids filling inbox/ with images nobody looked at.
@@ -882,6 +890,8 @@ async function handleInbound(msg: Message): Promise<void> {
         user: msg.author.username,
         user_id: msg.author.id,
         ts: msg.createdAt.toISOString(),
+        ...(replyToMessageId ? { reply_to_message_id: replyToMessageId } : {}),
+        ...(replyToUserId ? { reply_to_user_id: replyToUserId } : {}),
         ...(atts.length > 0 ? { attachment_count: String(atts.length), attachments: atts.join('; ') } : {}),
       },
     },
