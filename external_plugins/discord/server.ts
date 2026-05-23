@@ -28,6 +28,7 @@ import {
   type Message,
   type Attachment,
   type Interaction,
+  type User,
 } from 'discord.js'
 import { randomBytes } from 'crypto'
 import { readFileSync, writeFileSync, mkdirSync, readdirSync, rmSync, statSync, renameSync, realpathSync, chmodSync } from 'fs'
@@ -84,9 +85,12 @@ const client = new Client({
     GatewayIntentBits.Guilds,
     GatewayIntentBits.GuildMessages,
     GatewayIntentBits.MessageContent,
+    GatewayIntentBits.GuildMessageReactions,
+    GatewayIntentBits.DirectMessageReactions,
   ],
   // DMs arrive as partial channels — messageCreate never fires without this.
-  partials: [Partials.Channel],
+  // Message + Reaction partials handle uncached reactions on older messages.
+  partials: [Partials.Channel, Partials.Message, Partials.Reaction],
 })
 
 type PendingEntry = {
@@ -456,6 +460,8 @@ const mcp = new Server(
       'The sender reads Discord, not this session. Anything you want them to see must go through the reply tool — your transcript output never reaches their chat.',
       '',
       'Messages from Discord arrive as <channel source="discord" chat_id="..." message_id="..." user="..." ts="...">. If the tag has attachment_count, the attachments attribute lists name/type/size — call download_attachment(chat_id, message_id) to fetch them. Reply with the reply tool — pass chat_id back. Use reply_to (set to a message_id) only when replying to an earlier message; the latest message doesn\'t need a quote-reply, omit reply_to for normal responses.',
+
+      'Reaction events arrive as <reaction action="add" chat_id="..." message_id="..." user="..." user_id="..." emoji="..." emoji_id="..." ts="...">. action is "add" or "remove". emoji is the unicode character; emoji_id is the custom emoji snowflake if applicable, otherwise empty. Reactions on messages the bot authored are always forwarded; reactions on other messages follow the same access-control rules as text.',
       '',
       'reply accepts file paths (files: ["/abs/path.png"]) for attachments. Use react to add emoji reactions, and edit_message for interim progress updates. Edits don\'t trigger push notifications — when a long task completes, send a new reply so the user\'s device pings.',
       '',
@@ -807,6 +813,24 @@ client.on('messageCreate', msg => {
   handleInbound(msg).catch(e => process.stderr.write(`discord: handleInbound failed: ${e}\n`))
 })
 
+client.on('messageReactionAdd', async (reaction, user) => {
+  if (user.bot) return
+  if (reaction.partial) try { await reaction.fetch() } catch { return }
+  if (reaction.message.partial) try { await reaction.message.fetch() } catch { return }
+  handleReaction(reaction, user as User, 'add').catch(e =>
+    process.stderr.write(`discord: handleReaction (add) failed: ${e}\n`),
+  )
+})
+
+client.on('messageReactionRemove', async (reaction, user) => {
+  if (user.bot) return
+  if (reaction.partial) try { await reaction.fetch() } catch { return }
+  if (reaction.message.partial) try { await reaction.message.fetch() } catch { return }
+  handleReaction(reaction, user as User, 'remove').catch(e =>
+    process.stderr.write(`discord: handleReaction (remove) failed: ${e}\n`),
+  )
+})
+
 async function handleInbound(msg: Message): Promise<void> {
   const result = await gate(msg)
 
@@ -887,6 +911,58 @@ async function handleInbound(msg: Message): Promise<void> {
     },
   }).catch(err => {
     process.stderr.write(`discord channel: failed to deliver inbound to Claude: ${err}\n`)
+  })
+}
+
+async function handleReaction(
+  reaction: { message: Message; emoji: { name: string | null; id: string | null } },
+  user: User,
+  action: 'add' | 'remove',
+): Promise<void> {
+  const msg = reaction.message
+  const reactorId = user.id
+  const chat_id = msg.channelId
+  const isBotMessage = client.user?.id === msg.author.id
+
+  // Gate: only forward reactions on bot-authored messages, or from
+  // allowlisted reactors in allowlisted channels (mirrors the text gate).
+  if (!isBotMessage) {
+    const access = loadAccess()
+    const isDM = msg.channel.type === ChannelType.DM
+    if (isDM) {
+      if (!access.allowFrom.includes(reactorId)) return
+    } else {
+      const channelId = msg.channel.isThread()
+        ? msg.channel.parentId ?? msg.channelId
+        : msg.channelId
+      const policy = access.groups[channelId]
+      if (!policy) return
+      if (policy.allowFrom.length > 0 && !policy.allowFrom.includes(reactorId)) return
+    }
+  }
+
+  const emoji = reaction.emoji.name
+  const emoji_id = reaction.emoji.id ?? null
+  if (!emoji && !emoji_id) return
+
+  mcp.notification({
+    method: 'notifications/claude/channel',
+    params: {
+      content: `${emoji} @${user.username} ${action === 'add' ? 'reacted' : 'removed reaction'}`,
+      meta: {
+        chat_id,
+        message_id: msg.id,
+        message_author_id: msg.author.id,
+        user: user.username,
+        user_id: reactorId,
+        emoji: emoji ?? '',
+        emoji_id: emoji_id ?? null,
+        ts: new Date().toISOString(),
+        action,
+      },
+    },
+  }).catch(err => {
+    process.stderr.write(`discord channel: failed to deliver reaction to Claude: ${err}\n`)
   })
 }
 
