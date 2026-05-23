@@ -62,6 +62,21 @@
       "homepage": "https://github.com/SalesforceAIResearch/agentforce-adlc"
     },
     {
+      "name": "ai-devkit",
+      "description": "Make AI coding agents follow a repeatable engineering workflow with memory, verification, skills, and multi-agent setup",
+      "author": {
+        "name": "Hoang Nguyen",
+        "email": "hoang@codeaholicguy.com"
+      },
+      "category": "development",
+      "source": {
+        "source": "url",
+        "url": "https://github.com/codeaholicguy/ai-devkit.git",
+        "sha": "5565d3e27ca9d542b83a7c67431b2902b0c1b995"
+      },
+      "homepage": "https://ai-devkit.com"
+    },
+    {
       "name": "ai-plugins",
       "description": "Set up endorctl and use Endor Labs to scan, prioritize, and fix security risks across your software supply chain",
       "source": {
